@@ -22,6 +22,9 @@ SDC_SOURCE_BUCKET_COLUMN = "_sdc_source_bucket"
 SDC_SOURCE_FILE_COLUMN = "_sdc_source_file"
 SDC_SOURCE_LINENO_COLUMN = "_sdc_source_lineno"
 
+# Simple cache for S3 bucket listings - lasts for process duration
+_s3_files_cache = {}
+
 
 def retry_pattern():
     """
@@ -277,6 +280,19 @@ def list_files_in_bucket(bucket: str, search_prefix: str = None, aws_endpoint_ur
     :param aws_endpoint_url: optional aws url
     :returns: generator containing all found files
     """
+    # Create a simple cache key
+    cache_key = f"{bucket}:{search_prefix or ''}"
+
+    # Check if we have cached data
+    if cache_key in _s3_files_cache:
+        LOGGER.info(f"Using cached S3 listing for bucket={bucket}, prefix={search_prefix}")
+        for s3_obj in _s3_files_cache[cache_key]:
+            yield s3_obj
+        return
+
+    # Fetch from S3 and cache the results
+    LOGGER.info(f"Fetching S3 listing from AWS for bucket={bucket}, prefix={search_prefix}")
+
     # override default endpoint for non aws s3 services
     if aws_endpoint_url is not None:
         s3_client = boto3.client('s3', endpoint_url=aws_endpoint_url)
@@ -284,6 +300,7 @@ def list_files_in_bucket(bucket: str, search_prefix: str = None, aws_endpoint_ur
         s3_client = boto3.client('s3')
 
     s3_object_count = 0
+    s3_objects = []
 
     max_results = 1000
     args = {
@@ -300,10 +317,14 @@ def list_files_in_bucket(bucket: str, search_prefix: str = None, aws_endpoint_ur
 
     for s3_obj in filtered_s3_objects:
         s3_object_count += 1
+        s3_objects.append(s3_obj)
         yield s3_obj
 
     if s3_object_count > 0:
         LOGGER.info("Found %s files.", s3_object_count)
+        # Cache the results
+        _s3_files_cache[cache_key] = s3_objects
+        LOGGER.info(f"Cached {len(s3_objects)} S3 objects")
     else:
         LOGGER.warning('Found no files for bucket "%s" that match prefix "%s"', bucket, search_prefix)
 
